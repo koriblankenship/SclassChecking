@@ -1,12 +1,34 @@
+#title: Sclass Checker
+#author: Kori Blankenship
+#date: 2022-08-07
+
 #Run a series of checks to make sure sclass combinations are classed correctly.
-#Search for "INPUT" to find a couple cases where user can specify items.
 #Outputs are written to CSV files and require checking.
 
 ## SETUP
-library(dplyr)
-source("joining_attributes2vat.r") #Get the combine dbf with the joined attributes
-#Bring in the non reference sclass rules 
-nonrefrules <- read.csv("./IN/LANDFIRESuccessionClassMappingRules_05042022_nonreference.csv")
+# 1. Set the choose_region variable in the join_attributes2vat.r helper script.
+
+# 2. Make a list of BPS_MODEL codes for which you want to check the reference rules.
+#A table of the classified cells will be output.
+#Check output against the reference rules by hand.
+bps_list <- as.list(c("10360_1_2", "10390_1_2_3_7", "11780_1_2_7"))
+
+# 3. Run helper to get the combine dbf with the joined attributes
+source("R/join_attributes2vat.R") 
+## SETUP END
+
+## LIBRARIES
+library(tidyverse)
+
+## BRING IN THE NON REFERENCE SCLASS RULES
+nonrefrules <- read.csv("./IN/LANDFIRESuccessionClassMappingRules_07202022_nonreference.csv")
+
+# *************************************************************
+# CHECK SELECTED REFERENCE RULES
+# *************************************************************
+#this will create a table with classified combinations for all BpS
+#in the bps_list created in the SETUP
+bpsrulescheck <- filter(join, BPS_MODEL %in% bps_list)
 
 # *************************************************************
 # SUM COUNT OF CELLS IN EACH SCLASS
@@ -23,102 +45,109 @@ physcount <- join %>%
   summarise(PHYSCOUNT = sum(COUNT))
 
 # *************************************************************
-# NON REFERENCE RULES CHECK - check all evts listed in the nonreference rules
+# SPARSE BPS CHECK
 # *************************************************************
-nonref <- filter(nonrefrules, EVT.VALUE > 6999) #get non reference rules for 2020 EVT values
-nonref = rename(nonref, CONUS_EVT = EVT.VALUE) #rename the evt value column for the join
-nonref = rename(nonref, EVT_rules = EVT.CLASSNAME) #rename the sclass column for the join
-nonref = rename(nonref, SCLASS_rules = SCLASS) #rename the sclass column for the join
-nonrefcheck <- left_join(nonref, join, by = 'CONUS_EVT') #join nonref rules to evt 
+## Filter sparse BpS
+#the list of sparse values is for CONUS, HI has no sparse BpS
+sparsebpscheck <- filter(join, BPS_MODEL %in% c(10010, 10020,10030, 10040, 
+                                                10060,10070, 13410, 14980)) 
 
-#CHECK field is true if evt phys of ag, sparse, snow ice and water match the sclass call 
-nonrefcheck1 <- nonrefcheck  %>% 
+# *************************************************************
+# NON REFERENCE RULES CHECK - NON REF RULES VS. MAPPED SCLASS
+# *************************************************************
+## Join the non reference rules to the "join" table
+#filter for 2020 EVT values (values less than 7000 are for earlier versions)
+nonrefrules <- nonrefrules %>%
+  filter(EVT.VALUE>6999) 
+#rename the columns for the join 
+#evt_value is assigned in the join_attributes2vat.R helper script
+colnames(nonrefrules) <- c(evt_value, "EVT_rules", "SCLASS_rules") 
+#join nonref rules to "join" by EVT value
+nonrefcheck <- left_join(nonrefrules, join, by = evt_value) 
+
+## Check that the SCLASS_rules (from rules table) match the SCLASS (mapped value) 
+#"CHECK" column is true if they match
+nonrefcheck <- nonrefcheck  %>% 
+  mutate(CHECK = (SCLASS_rules == "Agriculture" & SCLASS == "Agriculture" |
+                    SCLASS_rules == "Barren or Sparse" & SCLASS == "Barren or Sparse" |
+                    SCLASS_rules == "Snow / Ice" & SCLASS == "Snow/Ice" |
+                    SCLASS_rules == "Water" & SCLASS == "Water" |
+                    SCLASS_rules == "UE" & SCLASS == "UE" |
+                    #developed trumps UE so I check it last
+                    SCLASS_rules == "Developed" & SCLASS == "Developed"))
+
+## Remove Barren or Sparse BpS
+nonrefcheck2 <- nonrefcheck %>% 
+  filter(!BPS_MODEL %in% c(10010, 10020,10030, 10040, 
+                           10060,10070, 13410, 14980))
+
+## Filter for false values and check them by hand
+nonrefcheck3 <- filter(nonrefcheck2, CHECK == "FALSE")
+
+# *************************************************************
+# NON REFERENCE RULES CHECK -- MAPPED SCLASS VS. EVT_PHYS
+# *************************************************************
+## Check that the SCLASS (mapped value) matches the EVT_PHYS  
+#"CHECK" column is true if they match
+#start with a filter to find when EVT_PHYS is a non reference value
+evtphyscheck <- join  %>% 
+  filter(EVT_PHYS %in%  c("Sparsely Vegetated", "Open Water",  
+                          "Quarries-Strip Mines-Gravel Pits-Well and Wind Pads", 
+                          "Developed-Low Intensity", "Developed-Medium Intensity", 
+                          "Developed-High Intensity", "Developed-Roads",
+                          "Developed-Open Space", "Snow-Ice", "Agricultural", 
+                          "Developed", "Exotic Herbaceous", "Exotic Tree-Shrub")) %>% 
   mutate(CHECK = (SCLASS == "Agriculture" & EVT_PHYS == "Agricultural" |
                     SCLASS == "Barren or Sparse" & EVT_PHYS == "Sparsely Vegetated" |
-                    SCLASS == "Barren or Sparse" & EVT_PHYS == "Quarries-Strip Mines-Gravel Pits-Well and Wind Pads" |
                     SCLASS == "Snow/Ice" & EVT_PHYS == "Snow-Ice" |
                     SCLASS == "Water" & EVT_PHYS == "Open Water" |
                     SCLASS == "UE" & EVT_PHYS == "Exotic Tree-Shrub" |
-                    SCLASS == "UE" & EVT_PHYS == "Exotic Herbaceous" |
-                    SCLASS == "UE" & EVT_PHYS == "Developed" | #developed trumps UE
-                    SCLASS == "Urban" & EVT_PHYS == "Developed" |
-                    SCLASS == "Urban" & EVT_PHYS == "Developed-Low Intensity" |
-                    SCLASS == "Urban" & EVT_PHYS == "Developed-Medium Intensity" |
-                    SCLASS == "Urban" & EVT_PHYS == "Developed-High Intensity" |
-                    SCLASS == "Urban" & EVT_PHYS == "Developed-Roads" |
-                    SCLASS == "Urban" & EVT_PHYS == "Developed-Open Space"))
+                    SCLASS == "UE" & EVT_PHYS == "Exotic Herbaceous" | 
+                    SCLASS == "UE" & EVT_PHYS == "Developed" |
+                    SCLASS == "UE" & EVT_NAME == "Ruderal" | 
+                    SCLASS == "UE" & EVT_NAME == "Plantation" |
+                    SCLASS == "Developed" & EVT_PHYS == "Developed" |
+                    SCLASS == "Developed" & EVT_PHYS == "Developed-Low Intensity" |
+                    SCLASS == "Developed" & EVT_PHYS == "Developed-Medium Intensity" |
+                    SCLASS == "Developed" & EVT_PHYS == "Developed-High Intensity" |
+                    SCLASS == "Developed" & EVT_PHYS == "Developed-Roads" |
+                    SCLASS == "Developed" & EVT_PHYS == "Developed-Open Space" |
+                    SCLASS == "Developed" & EVT_PHYS == "Quarries-Strip Mines-Gravel Pits-Well and Wind Pads"))
 
-#filter for false and check the remaining values by hand
-nonrefcheck2 <- filter(nonrefcheck1, CHECK == "FALSE")
-#split up to make tables w/ fewer rows: 1 table has mapzones <=50, the other has MZs > 50
-nonrefcheck2_W <- filter(nonrefcheck2, SCLASS == "UE" & CONUS_MZ_0 <= 50)
-nonrefcheck2_E <- filter(nonrefcheck2, SCLASS == "UE" & CONUS_MZ_0 > 50)
+## Remove Barren or Sparse BpS
+evtphyscheck2 <- evtphyscheck %>% 
+  filter(!BPS_MODEL %in% c(10010, 10020,10030, 10040, 
+                          10060,10070, 13410, 14980))
 
-# *************************************************************
-# SPARSE BPS CHECK
-# *************************************************************
-sparsebpscheck <- filter(join, BPS_MODEL %in% c(10010, 10020,10030, 10040, 
-                                                10060,10070, 13410, 14980)) #filter sparse bps
-
-# *************************************************************
-# NON REFERENCE RULES CHECK -- if sclass is nonreference, what is the EVT (after filtering out direct matches)
-# *************************************************************
-agcheck <- filter(join, SCLASS == "Agriculture", !EVT_PHYS == "Agricultural") #sclass is ag, phys is not ag
-
-sparsecheck <- join %>% #sclass is barren or sparse, phys is not 
-  filter(SCLASS == "Barren or Sparse" & !EVT_PHYS %in% c('Sparsely Vegetated', 
-                                                         'Quarries-Strip Mines-Gravel Pits-Well and Wind Pads')) 
-
-snowicecheck <- filter(join, SCLASS == "Snow/Ice", !EVT_PHYS == "Snow-Ice") #sclass is snow/ice, phys is not 
-
-uecheck <- join %>% #sclass is UE, phys is not exotic or developed
-  filter(SCLASS == "UE" & !EVT_PHYS %in% c('Exotic Tree-Shrub', 'Exotic Herbaceous', 'Developed'))
-uecheck2 <- filter(uecheck, !grepl('Ruderal', EVT_NAME)) #remove rows that contain ruderal in evt_name
-uecheck3 <- filter(uecheck2, !grepl('Plantation', EVT_NAME)) #remove rows that contain plantation in evt_name
-
-urbancheck <- join %>% #sclass is urban, phys is not developed
-  filter(SCLASS == "Urban" & !EVT_PHYS %in% c('Developed', 
-                                              'Developed-Low Intensity', 
-                                              'Developed-Medium Intensity', 
-                                              'Developed-High Intensity', 
-                                              'Developed-Roads', 
-                                              'Developed-Open Space'))
-
-watercheck <- filter(join, SCLASS == "Water", !EVT_PHYS == "Open Water") #sclass is water, phys is not 
-
-# *************************************************************
-# GET RESULTS FOR A SPECIFIC BPS IN A TABLE
-# *************************************************************
-#INPUT: make a list of BPS_MODEL codes you want to check the rules for
-bps_list <- as.list(c("10360_1_2", "10390_1_2_3_7", "11780_1_2_7"))
-bpsrulescheck <- filter(join, BPS_MODEL %in% bps_list)
+## Filter for false values and check them by hand
+evtphyscheck3 <- filter(evtphyscheck2, CHECK == "FALSE")
 
 # *************************************************************
 # WRITE RESULTS TO CSV
 # *************************************************************
-setwd("./OUT/") # INPUT: where you want results
+setwd("./OUT/") #where you want results
+write.csv(bpsrulescheck, "bpsrulescheck.csv") 
 write.csv(sclasscount, "sclasscount.csv")   
-write.csv(physcount, "physcount.csv")  
-write.csv(nonrefcheck2_W, "nonrefcheck2_W.csv")  
-write.csv(nonrefcheck2_E, "nonrefcheck2_E.csv")  
-write.csv(sparsebpscheck, "sparsebpscheck.csv")  
-write.csv(agcheck, "agcheck.csv")  
-write.csv(sparsecheck, "sparsecheck .csv")  
-write.csv(snowicecheck, "snowicecheck.csv")  
-write.csv(uecheck3, "uecheck3.csv")  
-write.csv(urbancheck, "urbancheck.csv")  
-write.csv(watercheck, "watercheck.csv")  
-write.csv(bpsrulescheck, "bpsrulescheck.csv")  
+write.csv(physcount, "physcount.csv")
+write.csv(sparsebpscheck, "sparsebpscheck.csv") 
+write.csv(nonrefcheck3, "nonrefcheck3.csv")
+write.csv(evtphyscheck3, "evtphyscheck3.csv")
 
 # *************************************************************
 # CHECKING THE OUTPUT
 # *************************************************************
-#The output tables will be blank if the sclass rules were applied correctly except in these tables:
-#sclasscount, physcount, 
-#nonrefcheck2_W, nonrefcheck2_E, 
-#sparsebpscheck, bpsrulescheck.
+##Oupupt tables should be checked by hand.
 
-#Using the small sample dbf provided with this code, even the tables listed above could be blank b/c
-#the criteria were not met. The criteria for these tables will be met when checking a CONUS wide combineed
-#sclass table. 
+# bpsrulescheck.csv - check combinations against the reference rules
+# sclasscount.csv - check selected classes against physcount.csv
+# physcount.csv - check selected classes against sclasscount.csv
+# sparsebpscheck.csv - check that sparse BpS classified correctly; 
+#                    - will be blank in HI b/c there are no sparse BpS there
+# nonrefcheck3.csv - will be blank if all combinations classified correctly
+# evtphyscheck3.csv - will be blank if all combinations classified correctly
+
+#Using the small sample dbf provided with this code, even the tables listed 
+#above could be blank b/c the sclass combinations may not present in the 
+#sample data. The criteria for these tables will be met when checking a 
+#CONUS wide combined sclass table. 
 
